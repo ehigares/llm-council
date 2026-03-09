@@ -436,3 +436,125 @@ Lives inside the new conversation flow, not in Settings.
 7. Note endpoint URL format: `https://[endpoint-id]-11434.proxy.runpod.net`
 8. Enter URL in Settings UI — no API key required for Ollama endpoints
 9. Use Wake Up button before starting conversations to avoid cold start delays
+---
+
+## Sprint 7 — Security & Hardening
+*Added 2026-03-08 following third-party code review*
+
+### Motivation
+This is a public GitHub repo installed by anyone with their own API keys.
+The app must be secure-by-default so every installer is protected.
+
+### Deliverables
+
+#### 1. Password Authentication
+- Password set during first-run wizard (new wizard step)
+- Hashed with bcrypt, stored in council_config.json
+- Backend issues a signed JWT session token on successful login (24hr inactivity timeout)
+- All API endpoints require valid token except: GET /, POST /api/login, GET /api/health
+- Frontend shows LoginScreen.jsx if no valid token
+- Token stored in browser sessionStorage (clears on tab close)
+- Failed logins: rate limited to 5 attempts then 15-minute lockout
+- New file: frontend/src/components/LoginScreen.jsx
+
+#### 2. API Key Encryption At Rest
+- api_key fields in council_config.json encrypted with Fernet (Python cryptography library)
+- Encryption key derived from user password via PBKDF2
+- Salt stored in data/.salt (never committed to git, added to .gitignore)
+- Keys decrypted in memory only when needed for API calls
+- Random signing secret stored in data/.secret (also in .gitignore)
+- Password change flow re-encrypts all stored keys with new derived key
+- If data/.salt is lost, stored keys are unrecoverable — documented clearly
+
+#### 3. Rate Limiting
+- Library: slowapi
+- POST /api/conversations/stream: 10 requests/minute/IP
+- POST /api/conversations: 20 requests/minute/IP
+- POST /api/login: 5 requests/minute/IP
+- HTTP 429 returned with clear error message
+- Frontend shows friendly "Too many requests" message
+
+#### 4. Input Sanitization
+- base_url: must be valid http:// or https:// URL
+- api_key: strip whitespace, max 200 chars
+- display_name: strip HTML, max 50 chars
+- model: strip whitespace, max 100 chars
+- Applied to POST /api/config and POST /api/test-connection
+- Invalid fields return HTTP 422
+
+#### 5. Request Size Limits
+- Maximum message size: 32,000 characters
+- HTTP 413 returned if exceeded
+- Friendly error shown in frontend
+
+#### 6. Security README Section
+- What password protects and doesn't protect
+- Warning about never exposing port 8001 to the internet
+- How to change password
+- Explanation of data/.salt and data/.secret — never delete them
+
+### New Dependencies (add to pyproject.toml)
+- cryptography (Fernet + PBKDF2)
+- bcrypt (password hashing)
+- slowapi (rate limiting)
+- PyJWT (session tokens)
+
+### New Files
+- frontend/src/components/LoginScreen.jsx
+- data/.salt (generated on first run, gitignored)
+- data/.secret (generated on first run, gitignored)
+
+### Modified Files
+- backend/main.py (auth middleware, rate limiting, size limits)
+- backend/config.py (encryption/decryption of api_key fields)
+- frontend/src/App.jsx (login screen gate)
+- frontend/src/components/Settings.jsx (password change flow)
+- .gitignore (add data/.salt, data/.secret)
+- README.md (security section)
+- pyproject.toml (new dependencies)
+
+---
+
+## Sprint 8 — Bug Fixes & Reliability
+*Added 2026-03-08 following third-party code review*
+
+### Motivation
+Five correctness and reliability issues identified in code review,
+plus test suite reorganization.
+
+### Deliverables
+
+#### 1. Fix CORS / Bind Address Mismatch
+- Add ALLOWED_ORIGINS environment variable (default: localhost only)
+- CORS and uvicorn bind address both derived from this variable
+- README documents how to configure for LAN access
+- Secure default: localhost-only
+
+#### 2. Fix start.sh Race Condition
+- Replace sleep 2 with poll loop hitting GET /api/health every 0.5s
+- Times out after 30 seconds with clear error message
+- Works on macOS, Linux, and Git Bash on Windows
+- GET /api/health returns proper JSON response
+
+#### 3. Schema Validation for POST /api/config
+- Full Pydantic model validates config structure before writing to disk
+- Validates: model list structure, chairman/summarization IDs exist
+  in pool, favorites IDs exist in pool, history_raw_exchanges 1-10
+- HTTP 422 with specific field errors on failure
+- Frontend displays validation errors clearly
+
+#### 4. Ranking Parse Failure Logging
+- Warning log when fallback regex kicks in (includes truncated model response)
+- Subtle warning icon in UI on ranking result when fallback was used
+- Not a blocking error — informational only
+
+#### 5. Test Suite Reorganization & Expansion
+- Move test_pipeline.py → tests/test_pipeline.py
+- New: tests/test_config.py (load, orphan detection, save/reload, validation)
+- New: tests/test_ranking.py (well-formed, malformed, empty input)
+- New: run_tests.sh / run_tests.ps1 test runner scripts
+- README documents how to run tests
+
+### Release
+- Tag v1.1.0 after all fixes verified
+- README updated with v1.0.0 → v1.1.0 changelog
